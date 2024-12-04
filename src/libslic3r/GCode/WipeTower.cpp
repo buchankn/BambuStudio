@@ -768,9 +768,15 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
 		.comment_with_value(" toolchange #", m_num_tool_changes + 1); // the number is zero-based
 
 
-    if (tool != (unsigned)(-1))
-        writer.append(std::string("; material : " + (m_current_tool < m_filpar.size() ? m_filpar[m_current_tool].material : "(NONE)") + " -> " + m_filpar[tool].material + "\n").c_str())
-              .append(";--------------------\n");
+    if (tool != (unsigned)(-1)) {
+        writer.append(std::string("; material : " + (m_current_tool < m_filpar.size() ?
+                                                     m_filpar[m_current_tool].material + " " +
+                                                     std::to_string(m_filpar[m_current_tool].temperature) : "(NONE)") +
+                                  " -> " + m_filpar[tool].material + " " + std::to_string(m_filpar[tool].temperature) +
+                                  "\n").c_str())
+                .append(";--------------------\n");
+    }
+
 
     writer.speed_override_backup();
     writer.speed_override(100);
@@ -785,9 +791,11 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
 
     // Ram the hot material out of the melt zone, retract the filament into the cooling tubes and let it cool.
     if (tool != (unsigned int)-1){ 			// This is not the last change.
+        int matl_temp = is_first_layer() ? m_filpar[tool].first_layer_temperature : m_filpar[tool].temperature;
         writer.append(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Tower_Start) + "\n");
         toolchange_Unload(writer, cleaning_box, m_filpar[m_current_tool].material,
-                          is_first_layer() ? m_filpar[tool].nozzle_temperature_initial_layer : m_filpar[tool].nozzle_temperature);
+                          (is_first_layer() ? m_filpar[m_current_tool].first_layer_temperature : m_filpar[m_current_tool].temperature),
+                          matl_temp);
         toolchange_Change(writer, tool, m_filpar[tool].material); // Change the tool, set a speed override for soluble and flex materials.
         toolchange_Load(writer, cleaning_box);
         // BBS
@@ -823,7 +831,7 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
             writer.travel(Vec2f(0, 0));
             writer.travel(initial_position);
         }
-        toolchange_Wipe(writer, cleaning_box, wipe_length);     // Wipe the newly loaded filament until the end of the assigned wipe area.
+        toolchange_Wipe(writer, cleaning_box, wipe_length, matl_temp);     // Wipe the newly loaded filament until the end of the assigned wipe area.
         writer.append(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Tower_End) + "\n");
         ++ m_num_tool_changes;
     } else
@@ -947,11 +955,11 @@ void WipeTower::toolchange_Unload(
     // be already set and there is no need to change anything. Also, the temperature could be changed
     // for wrong extruder.
     if (m_semm) {
-        if (new_temperature != 0 && (new_temperature != m_old_temperature || is_first_layer()) ) { 	// Set the extruder temperature, but don't wait.
+        m_old_temperature = m_filpar[m_current_tool].temperature;
+        if (new_temperature != 0 && (new_temperature > m_old_temperature || is_first_layer()) ) { 	// Set the higher or first layer temperature, but don't wait.
             // If the required temperature is the same as last time, don't emit the M104 again (if user adjusted the value, it would be reset)
             // However, always change temperatures on the first layer (this is to avoid issues with priming lines turned off).
             writer.set_extruder_temp(new_temperature, false);
-            m_old_temperature = new_temperature;
         }
     }
 
@@ -975,7 +983,7 @@ void WipeTower::toolchange_Unload(
         }
     }
 
-    // let's wait is necessary:
+    // let's wait if necessary:
     writer.wait(m_filpar[m_current_tool].delay);
     // we should be at the beginning of the cooling tube again - let's move to parking position:
     writer.retract(-m_cooling_tube_length/2.f+m_parking_pos_retraction-m_cooling_tube_retraction, 2000);
@@ -1060,11 +1068,12 @@ void WipeTower::toolchange_Load(
 void WipeTower::toolchange_Wipe(
 	WipeTowerWriter &writer,
 	const box_coordinates  &cleaning_box,
-	float wipe_length)
+	float wipe_length,
+    int new_temperature)
 {
 	// Increase flow on first layer, slow down print.
     writer.set_extrusion_flow(m_extrusion_flow * (is_first_layer() ? 1.15f : 1.f))
-		  .append("; CP TOOLCHANGE WIPE\n");
+            .append(std::string("; CP TOOLCHANGE WIPE - temperature " + std::to_string(m_old_temperature) + " -> " + std::to_string(new_temperature) + "\n").c_str());
 
     // BBS: add the note for gcode-check, when the flow changed, the width should follow the change
     if (is_first_layer()) {
@@ -1103,6 +1112,19 @@ void WipeTower::toolchange_Wipe(
 #endif
 
     bool need_change_flow = false;
+
+    // set values for temperature change mid-wipe if cooling down
+    bool new_temp_set = false;
+    // set y value to switch to lower temperature; ~20% of surface is already taken by cooling move, switch after another 30%
+    // because for standard purge volumes, a color change is mostly complete after about 40% of the surface is covered
+    float y_temp_change = 0.30f * (cleaning_box.lu.y() - writer.y()) + writer.y();
+    // Before starting wipe with a single-extruder MMU, wait for destination temperature if warming up.
+    // If destination temp is cooler, wait until mid-wipe to set it (for compatibility with fast-cooling extruders).
+    if (m_semm && new_temperature > m_old_temperature) {
+        writer.set_extruder_temp(new_temperature, true);
+        new_temp_set = true;
+    }
+
     // now the wiping itself:
 	for (int i = 0; true; ++i)	{
 		if (i!=0) {
@@ -1123,6 +1145,12 @@ void WipeTower::toolchange_Wipe(
             writer.extrude(xr + wipe_tower_wall_infill_overlap * m_perimeter_width, writer.y(), wipe_speed);
         else
             writer.extrude(xl - wipe_tower_wall_infill_overlap * m_perimeter_width, writer.y(), wipe_speed);
+
+        // For single-extruder MMU, if new temperature is lower, set it if nozzle has passed the y value threshold for temperature change
+        if (m_semm && new_temperature != 0 && new_temperature < m_old_temperature && !new_temp_set && writer.y() > y_temp_change) {
+            writer.set_extruder_temp(new_temperature, false); // don't wait for new temperature, keep going
+            new_temp_set = true;
+        }
 
         // BBS: recover the flow in non-bridging area
         if (need_change_flow) {
