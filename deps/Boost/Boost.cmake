@@ -130,8 +130,8 @@ ExternalProject_Add(
     dep_Boost
     #URL "https://boostorg.jfrog.io/artifactory/main/release/1.78.0/source/boost_1_78_0.zip"
     #URL "https://github.com/bambulab/boost/releases/download/1.78.0/boost_1_78_0.zip"
-    URL "https://archives.boost.io/release/1.86.0/source/boost_1_86_0.zip"
-    URL_HASH SHA256=cd20a5694e753683e1dc2ee10e2d1bb11704e65893ebcc6ced234ba68e5d8646
+    URL "https://archives.boost.io/release/1.82.0/source/boost_1_82_0.zip"
+    URL_HASH SHA256=f7c9e28d242abcd7a2c1b962039fcdd463ca149d1883c3a950bbcc0ce6f7c6d9
     #URL_HASH SHA256=f22143b5528e081123c3c5ed437e92f648fe69748e95fa6e2bd41484e2986cc3
     DOWNLOAD_DIR ${DEP_DOWNLOAD_DIR}/Boost
     CONFIGURE_COMMAND "${_bootstrap_cmd}"

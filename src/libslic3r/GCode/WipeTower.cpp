@@ -791,10 +791,10 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
 
     // Ram the hot material out of the melt zone, retract the filament into the cooling tubes and let it cool.
     if (tool != (unsigned int)-1){ 			// This is not the last change.
-        int matl_temp = is_first_layer() ? m_filpar[tool].nozzle_first_layer_temperature : m_filpar[tool].nozzle_temperature;
+        int matl_temp = is_first_layer() ? m_filpar[tool].nozzle_temperature_initial_layer : m_filpar[tool].nozzle_temperature;
         writer.append(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Tower_Start) + "\n");
         toolchange_Unload(writer, cleaning_box, m_filpar[m_current_tool].material,
-                          (is_first_layer() ? m_filpar[m_current_tool].nozzle_first_layer_temperature : m_filpar[m_current_tool].nozzle_temperature),
+                          (is_first_layer() ? m_filpar[m_current_tool].nozzle_temperature_initial_layer : m_filpar[m_current_tool].nozzle_temperature),
                           matl_temp);
         toolchange_Change(writer, tool, m_filpar[tool].material); // Change the tool, set a speed override for soluble and flex materials.
         toolchange_Load(writer, cleaning_box);
